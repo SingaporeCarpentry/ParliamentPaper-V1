@@ -1,0 +1,29 @@
+name: Parliament Crawler
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: |
+          python -m py_compile crawler.py
+          python -m pytest -q
+      - name: Run crawler
+        run: |
+          mkdir -p crawler_output
+          python crawler.py --source all --sprs-dates 08-04-2026 04-03-2026 04-02-2026 --output-dir crawler_output --user-agent "ParliamentResearchCrawler/1.0 (contact: ${{ secrets.CRAWLER_CONTACT }})"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crawler-output
+          path: crawler_output/
+          if-no-files-found: error
+          retention-days: 30
