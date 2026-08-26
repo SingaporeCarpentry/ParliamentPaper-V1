@@ -27,7 +27,11 @@ jobs:
       - name: Run crawler
         run: |
           mkdir -p crawler_output
-          python crawler.py --source all --sprs-dates 08-04-2026 04-03-2026 04-02-2026 --output-dir crawler_output --user-agent "ParliamentResearchCrawler/1.0 (contact: ${{ secrets.CRAWLER_CONTACT }})"
+          python crawler.py \
+            --source all \
+            --sprs-dates 08-04-2026 04-03-2026 04-02-2026 \
+            --output-dir crawler_output \
+            --user-agent "ParliamentResearchCrawler/1.0"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
