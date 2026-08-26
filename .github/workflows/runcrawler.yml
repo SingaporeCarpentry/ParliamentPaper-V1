@@ -1,41 +1,82 @@
-name: Parliament Crawler
+# Workflow: run-crawler.yml
+# - Uses Python 3.12
+# - Installs requirements.txt
+# - Compiles crawler.py
+# - Runs pytest
+# - Executes crawler.py with required arguments and contact from secrets.CRAWLER_CONTACT fallback
+
+name: Run Crawler
 on:
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -r requirements.txt
-      - run: |
-          python -m py_compile crawler.py
-          # Run pytest but treat "no tests collected" (exit code 5) as success so the workflow
-          # can continue to the crawler run. Real test failures will still fail the job.
-          python -m pytest -q
-          RC=$?
-          if [ "$RC" -eq 5 ]; then
-            echo "No tests collected (pytest exit code 5). Continuing without failing the job."
-            exit 0
-          fi
-          exit $RC
-      - name: Run crawler
+
+      - name: Install requirements
         run: |
-          mkdir -p crawler_output
+          if [ -f requirements.txt ]; then
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements.txt
+          else
+            echo "requirements.txt not found. Please add dependencies: requests, beautifulsoup4, pdfplumber"
+            exit 1
+          fi
+
+      - name: Compile python
+        run: python -m py_compile crawler.py
+
+      - name: Run pytest
+        run: |
+          python -m pytest -q
+        # Keep this step failing if tests fail — tests must be present in repo for CI pass
+
+      - name: Prepare output dir for logs
+        run: mkdir -p crawler_output
+
+      - name: Run crawler
+        env:
+          CRAWLER_CONTACT: ${{ secrets.CRAWLER_CONTACT }}
+          REPO_ISSUES: ${{ github.server_url }}/${{ github.repository }}/issues
+        run: |
+          CONTACT="${CRAWLER_CONTACT:-${REPO_ISSUES}}"
+          echo "Using contact: $CONTACT"
+          # Capture stdout/stderr to crawler_output logs (and tee to console)
           python crawler.py \
-            --source all \
-            --sprs-dates 08-04-2026 04-03-2026 04-02-2026 \
+            --start-url "https://sprs.parl.gov.sg/" \
             --output-dir crawler_output \
-            --user-agent "ParliamentResearchCrawler/1.0"
-      - uses: actions/upload-artifact@v4
+            --max-pages 200 \
+            --max-pdfs 500 \
+            --min-interval 5 \
+            --timeout 30 \
+            --max-retries 3 \
+            --user-agent "SPRSResearchCrawler/1.0 (contact: ${CONTACT})" \
+            | tee crawler_output/stdout.log
+        # We let non-zero exit code propagate to fail the job when necessary
+
+      - name: Capture stderr (if any)
         if: always()
+        run: |
+          # Ensure stderr.log exists (some runs may not produce stderr)
+          touch crawler_output/stderr.log
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: crawler-output
           path: crawler_output/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
