@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse, csv, hashlib, io, json, os, re, sys, time
+import argparse, csv, hashlib, io, json, os, re, sys, time, traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,7 +68,8 @@ class Client:
             "User-Agent": user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-SG,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
+            # Avoid advertising brotli to hosted runners that may lack brotli support
+            "Accept-Encoding": "gzip, deflate",
             "DNT": "1",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1"
@@ -137,19 +138,39 @@ def main() -> int:
     try:
         if a.source in ("all","parliament"):
             try:
-                r=c.get(ORDER_PAPER_URL); soup=BeautifulSoup(r.text,"html.parser"); links={urljoin(r.url,x.get("href","")):clean(x.get_text(" ")) for x in soup.select("a[href]") if urlsplit(urljoin(r.url,x.get("href",""))).path.endswith((".pdf",".PDF"))}
+                r=c.get(ORDER_PAPER_URL)
+                soup=BeautifulSoup(r.text,"html.parser")
+                links = {}
+                for a_tag in soup.select("a[href]"):
+                    href = a_tag.get("href","")
+                    if not href: continue
+                    full = urljoin(r.url, href)
+                    links[full] = clean(a_tag.get_text(" "))
                 ev.append(Event(now(),"parliament","listing",r.url,str(r.status_code),"ok",len(links)))
                 for url,title in list(links.items())[:a.parliament_limit or None]:
                     row={k:"" for k in P_FIELDS}; row.update(title=title or Path(urlsplit(url).path).name,document_url=url)
                     try:
-                        d=c.get(url); data=d.content
-                        if not data.startswith(b"%PDF-"): raise ValueError("response is not PDF")
-                        with pdfplumber.open(io.BytesIO(data)) as pdf: text=clean("\n".join((p.extract_text() or "") for p in pdf.pages)); pages=len(pdf.pages)
+                        d=c.get(url)
+                        data=d.content
+                        ct = d.headers.get("Content-Type", "")
+                        if not data.startswith(b"%PDF-"):
+                            # save raw response to help debugging (anti-bot/HTML pages)
+                            debug_dir = out / "pdf_debug"
+                            debug_dir.mkdir(exist_ok=True, parents=True)
+                            debug_name = f"{hashlib.sha256(url.encode()).hexdigest()[:16]}.bin"
+                            (debug_dir / debug_name).write_bytes(data)
+                            raise ValueError(f"response is not PDF (content-type={ct}, saved={debug_dir / debug_name})")
+                        with pdfplumber.open(io.BytesIO(data)) as pdf:
+                            text=clean("\n".join((p.extract_text() or "") for p in pdf.pages))
+                            pages=len(pdf.pages)
                         name=f"{hashlib.sha256(url.encode()).hexdigest()[:16]}.pdf"; target=out/"pdf"/name; target.parent.mkdir(exist_ok=True); target.write_bytes(data)
-                        row.update(http_status=d.status_code,download_status="success",download_bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),page_count=pages,content_chars=len(text),content_text=text)
-                    except Exception as e: row.update(download_status="failed",error=f"{type(e).__name__}: {clean(e)}")
+                        row.update(http_status=d.status_code,download_status="success",download_bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),page_count=pages,content_chars=len(text),content_text=text,local_pdf_path=str(target),error="")
+                    except Exception as e:
+                        err = f"{type(e).__name__}: {clean(e)}\n{traceback.format_exc()}"
+                        row.update(download_status="failed",error=err)
                     pr.append(row)
-            except Exception as e: ev.append(Event(now(),"parliament","listing",ORDER_PAPER_URL,"403" if isinstance(e,AccessBlocked) else "0",f"{type(e).__name__}: {clean(e)}"))
+            except Exception as e:
+                ev.append(Event(now(),"parliament","listing",ORDER_PAPER_URL,"403" if isinstance(e,AccessBlocked) else "0",f"{type(e).__name__}: {clean(e)}"))
         if a.source in ("all","sprs"):
             for date in a.sprs_dates:
                 url=SPRS_URL.format(date=date)
